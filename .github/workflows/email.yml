@@ -14,7 +14,7 @@ jobs:
         with:
           python-version: '3.11'
       - run: pip install -r requirements.txt
-      - run: python main_22_07_2025_v1.py
+      - run: python main.py
         env:
           GOOGLE_JSON: ${{ secrets.GOOGLE_JSON }}
           SHEET_ID: ${{ secrets.SHEET_ID }}
