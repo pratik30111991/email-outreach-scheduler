@@ -1,75 +1,87 @@
-#!/usr/bin/env python3
-# Version: 22-Jul-2025 12:15 IST v1
-import os, base64, smtplib
+import os
+import json
+import smtplib
+import time
+from datetime import datetime
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
-from datetime import datetime
-import requests
+import pytz
 
+# Environment variables
 SHEET_ID = os.getenv("SHEET_ID")
-GMAIL_ID = os.getenv("GMAIL_ID")
-GMAIL_PASS = os.getenv("GMAIL_PASS")
-BACKEND_BASE = os.getenv("BACKEND_BASE")
+BACKEND_BASE = os.getenv("BACKEND_BASE")  # like: https://auto-email-scheduler.onrender.com
+GMAIL_ID = os.getenv("GMAIL_ID")  # sender email
+GMAIL_PASS = os.getenv("GMAIL_PASS")  # SMTP password
+GOOGLE_JSON = os.getenv("GOOGLE_JSON")
 
-SCOPES = ['https://www.googleapis.com/auth/spreadsheets']
-creds = service_account.Credentials.from_service_account_info(
-    base64.b64decode(os.getenv("GOOGLE_JSON")).decode()
-)
+# Setup Google Sheets API
+creds_dict = json.loads(GOOGLE_JSON)
+creds = service_account.Credentials.from_service_account_info(creds_dict)
 service = build('sheets', 'v4', credentials=creds)
-sheet = service.spreadsheets()
 
-def read_rows():
-    res = sheet.values().get(spreadsheetId=SHEET_ID, range='Sheet1!A2:K').execute()
-    vals = res.get('values', [])
-    return [row for row in vals if row and len(row)>=8]
+sheet_name = "Sales_Mails"
+timezone = pytz.timezone("Asia/Kolkata")
 
-def write_row(idx, col, val):
-    sheet.values().update(
-        spreadsheetId=SHEET_ID,
-        range=f'Sheet1!{col}{idx+2}',
-        valueInputOption='RAW',
-        body={'values': [[val]]}
-    ).execute()
+def send_email(to_email, subject, message, row_num):
+    msg = MIMEMultipart("alternative")
+    msg["From"] = f"Unlisted Radar <{GMAIL_ID}>"
+    msg["To"] = to_email
+    msg["Subject"] = subject
 
-def send_email(to_email, subject, body):
-    msg = MIMEMultipart('alternative')
-    msg['From'] = GMAIL_ID
-    msg['To'] = to_email
-    msg['Subject'] = subject
-    msg.attach(MIMEText(body, 'html'))
-    with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
-        server.login(GMAIL_ID, GMAIL_PASS)
-        server.sendmail(GMAIL_ID, to_email, msg.as_string())
+    # Add tracking pixel
+    tracking_url = f"{BACKEND_BASE}/track?id={row_num}&email={to_email}"
+    pixel = f'<img src="{tracking_url}" width="1" height="1" style="display:none"/>'
+    body = message + pixel
 
-def main():
-    now = datetime.now()
-    rows = read_rows()
-    for idx, row in enumerate(rows):
-        status = row[6]
-        sched = datetime.strptime(row[7], '%d/%m/%Y %H:%M:%S')
-        if status.strip() != 'Ready' or now < sched:
-            continue
+    msg.attach(MIMEText(body, "html"))
 
-        domain, url, title, email, draft = row[1].strip(), row[2], row[3], row[4], row[5]
-        if not draft:
-            resp = requests.post(
-                f"{BACKEND_BASE}/draft",
-                json={'domain': domain, 'page_url': url, 'title': title}
-            )
-            draft = resp.json().get('draft', '')
-            write_row(idx, 'F', draft)
+    server = smtplib.SMTP_SSL("smtp.gmail.com", 465)
+    server.login(GMAIL_ID, GMAIL_PASS)
+    server.sendmail(GMAIL_ID, to_email, msg.as_string())
+    server.quit()
 
-        tracking_pixel = f'<img src="{BACKEND_BASE}/track?id={idx+2}" width="1" height="1" />'
-        full_body = draft + '<br><br>' + tracking_pixel
+    return True
 
+def run_scheduler():
+    sheet_range = f"{sheet_name}!A2:K"
+    result = service.spreadsheets().values().get(spreadsheetId=SHEET_ID, range=sheet_range).execute()
+    rows = result.get("values", [])
+
+    now = datetime.now(timezone)
+
+    for idx, row in enumerate(rows, start=2):
         try:
-            send_email(email, f"Collaborate on content – {title}", full_body)
-            write_row(idx, 'G', 'Sent')
-            write_row(idx, 'H', now.strftime('%d/%m/%Y %H:%M:%S'))
-        except Exception as e:
-            write_row(idx, 'G', f'Error: {e}')
+            name = row[1] if len(row) > 1 else ''
+            email = row[2] if len(row) > 2 else ''
+            subject = row[4] if len(row) > 4 else ''
+            message = row[5] if len(row) > 5 else ''
+            schedule_str = row[6] if len(row) > 6 else ''
+            status = row[7] if len(row) > 7 else ''
 
-if __name__ == '__main__':
-    main()
+            if not email or not schedule_str or status.strip().lower() == "sent":
+                continue
+
+            scheduled_time = timezone.localize(datetime.strptime(schedule_str, "%d/%m/%Y %H:%M:%S"))
+
+            if now >= scheduled_time:
+                send_email(email, subject, message, idx)
+                service.spreadsheets().values().update(
+                    spreadsheetId=SHEET_ID,
+                    range=f"{sheet_name}!H{idx}",
+                    valueInputOption="RAW",
+                    body={"values": [["Sent"]]}
+                ).execute()
+                service.spreadsheets().values().update(
+                    spreadsheetId=SHEET_ID,
+                    range=f"{sheet_name}!I{idx}",
+                    valueInputOption="RAW",
+                    body={"values": [[now.strftime("%d/%m/%Y %H:%M:%S")]]}
+                ).execute()
+                print(f"Email sent to {email}")
+        except Exception as e:
+            print(f"Error on row {idx}: {e}")
+
+if __name__ == "__main__":
+    run_scheduler()
