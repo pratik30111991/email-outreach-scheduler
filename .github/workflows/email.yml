@@ -1,0 +1,23 @@
+name: Scheduled Email Sender
+
+on:
+  schedule:
+    - cron: '*/10 * * * *' # Runs every 10 min
+  workflow_dispatch:
+
+jobs:
+  send_email:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - uses: actions/setup-python@v2
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt
+      - run: python main_22_07_2025_v1.py
+        env:
+          GOOGLE_JSON: ${{ secrets.GOOGLE_JSON }}
+          SHEET_ID: ${{ secrets.SHEET_ID }}
+          BACKEND_BASE: ${{ secrets.BACKEND_BASE }}
+          GMAIL_ID: ${{ secrets.GMAIL_ID }}
+          GMAIL_PASS: ${{ secrets.GMAIL_PASS }}
